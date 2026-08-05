@@ -123,13 +123,36 @@ const UIController = {
     updateChannelReminder: function(channel) {
         const reminderEl = document.getElementById('channelReminder');
         if (!reminderEl) return;
-        const shouldShowReminder = channel === 'github' && !this.hasTranslatorConfiguration();
-        if (shouldShowReminder) {
-            reminderEl.textContent = 'Github channel可以进行翻译，请在设置中填写 OpenRouter API Key 和 System Prompt，否则 Github 输出会出现中文重复。';
-            reminderEl.classList.add('show');
-        } else {
+
+        const activeChannel = (typeof ChannelConverter !== 'undefined' && typeof ChannelConverter.getChannel === 'function')
+            ? ChannelConverter.getChannel(channel)
+            : null;
+        const reminder = activeChannel && activeChannel.reminder;
+
+        if (!reminder) {
             reminderEl.classList.remove('show');
+            return;
         }
+
+        if (reminder.requiresTranslation && !this.hasTranslatorConfiguration()) {
+            reminderEl.textContent = reminder.text;
+            reminderEl.classList.add('show');
+            return;
+        }
+
+        if (!reminder.requiresTranslation) {
+            reminderEl.textContent = reminder.text;
+            reminderEl.classList.add('show');
+            return;
+        }
+
+        if (channel === 'x') {
+            reminderEl.textContent = reminder.text;
+            reminderEl.classList.add('show');
+            return;
+        }
+
+        reminderEl.classList.remove('show');
     },
 
     hasTranslatorConfiguration: function() {
@@ -429,6 +452,29 @@ const UIController = {
         return AppConfig.themes[AppConfig.defaults.theme].primary;
     },
 
+    applyRenderedChannelResult: function(rendered, htmlOutput, preview) {
+        if (!rendered || !htmlOutput || !preview) {
+            return;
+        }
+
+        htmlOutput.value = rendered.output || '';
+        preview.innerHTML = rendered.previewHtml || '';
+
+        preview.classList.remove('wechat-preview', 'markdown-preview', 'plain-text-preview-host', 'thread-preview-host');
+        if (rendered.channel && rendered.channel.previewHostClass) {
+            preview.classList.add(rendered.channel.previewHostClass);
+        }
+
+        const codeBtn = document.getElementById('codeTabButton');
+        const codeTitle = document.getElementById('codeTabTitle');
+        if (codeBtn) codeBtn.textContent = `📄 ${rendered.channel.outputLabel}`;
+        if (codeTitle) codeTitle.textContent = rendered.channel.outputTitle;
+
+        if (rendered.needsMathTypeset) {
+            this.typesetMath(preview);
+        }
+    },
+
     // 更新输出
     updateOutput: async function() {
         const markdownInput = document.getElementById('markdownInput');
@@ -449,45 +495,26 @@ const UIController = {
         const taskToken = ++this.renderTaskToken;
 
         try {
-            if (channel === 'wechat') {
-                if (markdown.includes('```mermaid') && typeof MarkdownConverter.hasMermaidSupport === 'function' && MarkdownConverter.hasMermaidSupport()) {
-                    this.showLoading();
-                }
-                const html = await MarkdownConverter.convertMarkdownToWechat(markdown, AppConfig.defaults.mode, themeColor);
-                if (taskToken !== this.renderTaskToken) {
-                    return;
-                }
-                htmlOutput.value = html;
-                preview.innerHTML = html;
-                // 预览样式切换
-                preview.classList.add('wechat-preview');
-                preview.classList.remove('markdown-preview');
-                // 切换代码标签标题为 HTML
-                const codeBtn = document.getElementById('codeTabButton');
-                const codeTitle = document.getElementById('codeTabTitle');
-                if (codeBtn) codeBtn.textContent = '📄 HTML代码';
-                if (codeTitle) codeTitle.textContent = '📋 HTML 代码 (可滚动查看)';
-            } else if (channel === 'github') {
+            const shouldShowWechatLoading = channel === 'wechat'
+                && markdown.includes('```mermaid')
+                && typeof MarkdownConverter.hasMermaidSupport === 'function'
+                && MarkdownConverter.hasMermaidSupport();
+
+            if (shouldShowWechatLoading || channel !== 'wechat') {
                 this.showLoading();
-                const combinedMd = await ChannelConverter.convertToGithub(markdown);
-                if (taskToken !== this.renderTaskToken) {
-                    return;
-                }
-                htmlOutput.value = combinedMd; // For GitHub channel, textarea holds Markdown
-                // Render preview as HTML using marked
-                preview.innerHTML = marked(combinedMd);
-                this.typesetMath(preview);
-                // 预览样式切换
-                preview.classList.add('markdown-preview');
-                preview.classList.remove('wechat-preview');
-                // 切换代码标签标题为 Markdown
-                const codeBtn = document.getElementById('codeTabButton');
-                const codeTitle = document.getElementById('codeTabTitle');
-                if (codeBtn) codeBtn.textContent = '📄 Markdown';
-                if (codeTitle) codeTitle.textContent = '📋 Markdown 代码 (可滚动查看)';
             }
+
+            const rendered = await ChannelConverter.renderForChannel(channel, markdown, {
+                themeColor,
+                mode: AppConfig.defaults.mode
+            });
+
+            if (taskToken !== this.renderTaskToken) {
+                return;
+            }
+
+            this.applyRenderedChannelResult(rendered, htmlOutput, preview);
             this.updateCopyButtonLabels();
-            // 自动滚动到预览顶部
             if (AppConfig.defaults.autoScrollToTop) {
                 preview.scrollTop = 0;
             }
@@ -561,20 +588,21 @@ const UIController = {
         }
     },
 
-    getCopyPreviewButtonLabel: function() {
-        const channel = this.getCurrentChannel();
-        if (channel === 'wechat') {
-            return '复制样式';
+    getActiveChannelConfig: function() {
+        if (typeof ChannelConverter !== 'undefined' && typeof ChannelConverter.getChannel === 'function') {
+            return ChannelConverter.getChannel(this.getCurrentChannel());
         }
-        return '复制 Markdown';
+        return null;
+    },
+
+    getCopyPreviewButtonLabel: function() {
+        const activeChannel = this.getActiveChannelConfig();
+        return (activeChannel && activeChannel.copyPreviewLabel) || '复制文案';
     },
 
     getCopyHtmlButtonLabel: function() {
-        const channel = this.getCurrentChannel();
-        if (channel === 'github') {
-            return '复制 Markdown';
-        }
-        return '复制代码';
+        const activeChannel = this.getActiveChannelConfig();
+        return (activeChannel && activeChannel.copyOutputLabel) || '复制文案';
     },
 
     updateCopyButtonLabels: function() {
