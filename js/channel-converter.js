@@ -115,21 +115,44 @@ const ChannelConverter = {
 
     async buildBilingualMarkdown(markdown) {
         const sanitized = this.prepareSourceMarkdown(markdown);
+        if (!sanitized.trim()) {
+            return '';
+        }
+
         const enMd = await Translator.translateMarkdownToEnglish(sanitized);
-        return `${stripLeadMarkers(enMd)}\n\n---\n\n${sanitized}`.trim();
+        const translated = stripLeadMarkers(enMd || '').trim();
+        const original = sanitized.trim();
+
+        if (!translated || this.isSameContent(translated, original)) {
+            return original;
+        }
+
+        return `${translated}\n\n---\n\n${original}`;
     },
 
     async buildLinkedInPost(markdown) {
         const sanitized = this.prepareSourceMarkdown(markdown);
+        if (!sanitized.trim()) {
+            return '';
+        }
+
         const enMd = await Translator.translateMarkdownToEnglish(sanitized);
         const enText = this.markdownToPlainText(enMd);
         const zhText = this.markdownToPlainText(sanitized);
+
+        if (!enText || this.isSameContent(enText, zhText)) {
+            return zhText;
+        }
 
         return [enText, '——', zhText].filter(Boolean).join('\n\n').trim();
     },
 
     async buildXThread(markdown) {
         const sanitized = this.prepareSourceMarkdown(markdown);
+        if (!sanitized.trim()) {
+            return '';
+        }
+
         const enMd = await Translator.translateMarkdownToEnglish(sanitized);
         const enText = this.markdownToPlainText(enMd);
         const posts = this.splitIntoXThread(enText);
@@ -138,6 +161,13 @@ const ChannelConverter = {
 
     prepareSourceMarkdown(markdown) {
         return stripLeadMarkers(markdown || '');
+    },
+
+    isSameContent(first, second) {
+        const normalize = (value) => String(value || '')
+            .replace(/\r\n?/g, '\n')
+            .trim();
+        return normalize(first) === normalize(second);
     },
 
     markdownToPlainText(markdown) {
@@ -179,7 +209,7 @@ const ChannelConverter = {
             .trim();
 
         if (!normalized) {
-            return [''];
+            return [];
         }
 
         const paragraphs = normalized.split(/\n\n+/).map(part => part.trim()).filter(Boolean);
@@ -213,14 +243,31 @@ const ChannelConverter = {
             const chunks = [];
             let buffer = '';
 
+            const splitLongWord = (word) => {
+                const parts = [];
+                let part = '';
+
+                for (const character of word) {
+                    if (part && `${part}${character}`.length > maxLength) {
+                        parts.push(part);
+                        part = character;
+                    } else {
+                        part += character;
+                    }
+                }
+
+                if (part) {
+                    parts.push(part);
+                }
+                return parts;
+            };
+
             words.forEach(word => {
                 if (!buffer) {
                     if (word.length <= maxLength) {
                         buffer = word;
                     } else {
-                        for (let i = 0; i < word.length; i += maxLength) {
-                            chunks.push(word.slice(i, i + maxLength));
-                        }
+                        chunks.push(...splitLongWord(word));
                     }
                     return;
                 }
@@ -233,9 +280,7 @@ const ChannelConverter = {
                     if (word.length <= maxLength) {
                         buffer = word;
                     } else {
-                        for (let i = 0; i < word.length; i += maxLength) {
-                            chunks.push(word.slice(i, i + maxLength));
-                        }
+                        chunks.push(...splitLongWord(word));
                         buffer = '';
                     }
                 }
@@ -257,7 +302,7 @@ const ChannelConverter = {
         });
 
         pushCurrent();
-        return posts.length ? posts : [''];
+        return posts;
     },
 
     escapeHtml(text) {
