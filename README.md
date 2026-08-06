@@ -33,11 +33,16 @@
 - `——` 分隔
 - 中文版在后
 
-### 4. X Thread
-输出适合 X 的 thread：
-- 自动按长度切分
-- 自动编号 `1/N`, `2/N`, `3/N`
-- 便于逐条复制粘贴
+### 4. X Article + Thread
+输出一份完整的 X 发布包：
+- X Article：保留标题、小标题、粗体和列表，支持富文本复制
+- 主 Thread：AI 生成一段简短推荐，并列出文章要点
+- 要点 Thread：每个 Bullet Point 单独展开为一条 post
+- 自动编号 `1/N`, `2/N`, `3/N`，并限制每条不超过 280 字符
+
+点击 `✨ 生成 X Article + Thread` 才会调用 OpenRouter，正常输入和预览不会持续消耗 API 额度。
+
+注意：[X Articles](https://help.x.com/en/using-x/articles) 的发布资格目前限于 X Premium、Premium+、Premium Business 和 Premium Organizations。
 
 ---
 
@@ -49,7 +54,7 @@
 - 支持数学公式（MathJax）
 - 支持 Mermaid 图表
 - 支持代码高亮
-- 支持通过 OpenRouter 把中文 Markdown 翻译成英文
+- 支持通过 OpenRouter 翻译内容、生成 X 推荐语和提取文章要点
 - 支持多平台 copy/paste-ready 输出
 
 ---
@@ -68,25 +73,25 @@ open index.html
 ### 基本流程
 1. 在左侧输入 Markdown
 2. 选择输出渠道
-3. 如有需要，配置翻译（OpenRouter）
+3. 如有需要，配置翻译和 AI 生成（OpenRouter）
 4. 查看右侧预览
 5. 点击复制按钮，把内容粘贴到目标平台
 
 ---
 
-## 翻译配置（OpenRouter）
+## 翻译与 AI 配置（OpenRouter）
 
 在页面顶部点击 `⚙️` 可配置：
 - OpenRouter API Key
 - 模型
-- System Prompt
+- System Prompt（可选，用于控制语言风格）
 
 这些信息会保存在浏览器 localStorage。
 
 如果没有配置翻译：
 - Substack / GitHub 会直接复用原文
 - LinkedIn 会直接输出原文整理版
-- X Thread 会直接基于原文切分
+- X Article + Thread 会提供本地预览；配置 API Key 并点击生成按钮后，AI 才会生成推荐语和要点
 
 ---
 
@@ -139,7 +144,7 @@ markdown-to-wechat-converter/
 ## 适合继续扩展的方向
 
 - 给 LinkedIn 加 hook / CTA / hashtag 策略
-- 给 X Thread 加首条 opening tweet 模板
+- 给 X Article 加封面图和发布链接占位
 - 新增 Medium / Notion / Slack formatter
 - 增加“只输出英文 / 只输出中文 / bilingual”切换
 - 把平台策略抽成更细的 formatter pipeline

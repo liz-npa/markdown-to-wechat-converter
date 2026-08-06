@@ -4,6 +4,7 @@ const UIController = {
     customColor: null, // 新增：自定义颜色
     currentChannel: 'wechat',
     renderTaskToken: 0,
+    currentRenderedResult: null,
 
     // 初始化应用
     init: function() {
@@ -36,6 +37,11 @@ const UIController = {
             markdownInput.addEventListener('input', () => this.updateOutput());
         }
 
+        const preview = document.getElementById('preview');
+        if (preview) {
+            preview.addEventListener('click', (event) => this.handlePreviewAction(event));
+        }
+
         // 渠道选择事件
         const channelSelect = document.getElementById('channelSelect');
         if (channelSelect) {
@@ -66,7 +72,13 @@ const UIController = {
             }
             const translatorPanel = document.getElementById('translatorPanel');
             const translatorButton = document.getElementById('translatorButton');
-            if (translatorPanel && !translatorPanel.contains(e.target) && e.target !== translatorButton) {
+            const generateXButton = document.getElementById('generateXButton');
+            if (
+                translatorPanel
+                && !translatorPanel.contains(e.target)
+                && e.target !== translatorButton
+                && e.target !== generateXButton
+            ) {
                 translatorPanel.style.display = 'none';
             }
         });
@@ -82,6 +94,7 @@ const UIController = {
         // 翻译设置
         window.toggleTranslatorPanel = this.toggleTranslatorPanel.bind(this);
         window.saveTranslatorSettings = this.saveTranslatorSettings.bind(this);
+        window.generateXPublishingContent = this.generateXPublishingContent.bind(this);
     },
 
     // 初始化元素
@@ -110,12 +123,14 @@ const UIController = {
         this.populateTemplateOptions();
         // 更新渠道提醒状态
         this.updateChannelReminder(this.currentChannel);
+        this.updateXGeneratorVisibility();
         this.updateCopyButtonLabels();
     },
 
     handleChannelChange: function(channel) {
         this.currentChannel = channel || 'wechat';
         this.updateChannelReminder(this.currentChannel);
+        this.updateXGeneratorVisibility();
         this.updateCopyButtonLabels();
         this.updateOutput();
     },
@@ -131,6 +146,15 @@ const UIController = {
 
         if (!reminder) {
             reminderEl.classList.remove('show');
+            return;
+        }
+
+        if (reminder.requiresAI) {
+            const hasAI = typeof Translator !== 'undefined'
+                && typeof Translator.hasAIConfiguration === 'function'
+                && Translator.hasAIConfiguration();
+            reminderEl.textContent = hasAI ? reminder.text : reminder.missingText;
+            reminderEl.classList.add('show');
             return;
         }
 
@@ -158,8 +182,13 @@ const UIController = {
     hasTranslatorConfiguration: function() {
         const cfg = AppConfig.translation || {};
         const key = (cfg.openrouter && cfg.openrouter.apiKey && cfg.openrouter.apiKey.trim()) || this.safeReadLocalStorage('openrouter_api_key');
-        const prompt = this.safeReadLocalStorage('translation_system_prompt') || (cfg.systemPrompt && cfg.systemPrompt.trim()) || '';
-        return !!(key && prompt);
+        return !!key;
+    },
+
+    updateXGeneratorVisibility: function() {
+        const button = document.getElementById('generateXButton');
+        if (!button) return;
+        button.style.display = this.currentChannel === 'x' ? 'inline-flex' : 'none';
     },
 
     safeReadLocalStorage: function(key) {
@@ -173,7 +202,7 @@ const UIController = {
 
     modelPresets: [
         'openai/gpt-4o-mini',
-        'google/gemini-1.5-flash-latest',
+        'google/gemini-3.5-flash',
         'deepseek/deepseek-chat'
     ],
 
@@ -293,7 +322,11 @@ const UIController = {
             }
 
             const configModel = (openCfg.model && openCfg.model.trim()) || '';
-            const storedModel = this.safeReadLocalStorage('openrouter_model');
+            let storedModel = this.safeReadLocalStorage('openrouter_model');
+            if (storedModel === 'google/gemini-1.5-flash-latest') {
+                storedModel = 'google/gemini-3.5-flash';
+                localStorage.setItem('openrouter_model', storedModel);
+            }
             const defaultModel = this.modelPresets[0] || 'openrouter/auto';
             const model = storedModel || configModel || defaultModel;
             if (!AppConfig.translation.openrouter) AppConfig.translation.openrouter = {};
@@ -459,8 +492,9 @@ const UIController = {
 
         htmlOutput.value = rendered.output || '';
         preview.innerHTML = rendered.previewHtml || '';
+        this.currentRenderedResult = rendered;
 
-        preview.classList.remove('wechat-preview', 'markdown-preview', 'plain-text-preview-host', 'thread-preview-host');
+        preview.classList.remove('wechat-preview', 'markdown-preview', 'plain-text-preview-host', 'thread-preview-host', 'x-publishing-preview-host');
         if (rendered.channel && rendered.channel.previewHostClass) {
             preview.classList.add(rendered.channel.previewHostClass);
         }
@@ -472,6 +506,103 @@ const UIController = {
 
         if (rendered.needsMathTypeset) {
             this.typesetMath(preview);
+        }
+    },
+
+    generateXPublishingContent: async function() {
+        if (this.getCurrentChannel() !== 'x') return;
+
+        const hasAI = typeof Translator !== 'undefined'
+            && typeof Translator.hasAIConfiguration === 'function'
+            && Translator.hasAIConfiguration();
+        if (!hasAI) {
+            const panel = document.getElementById('translatorPanel');
+            if (panel) panel.style.display = 'block';
+            const keyInput = document.getElementById('translatorApiKey');
+            if (keyInput) keyInput.focus();
+            this.updateChannelReminder('x');
+            return;
+        }
+
+        const markdownInput = document.getElementById('markdownInput');
+        const htmlOutput = document.getElementById('htmlOutput');
+        const preview = document.getElementById('preview');
+        const button = document.getElementById('generateXButton');
+        if (!markdownInput || !htmlOutput || !preview) return;
+
+        const markdown = markdownInput.value;
+        if (!markdown.trim()) {
+            this.showError('请先输入一篇 Markdown 文章');
+            return;
+        }
+
+        const taskToken = ++this.renderTaskToken;
+        const originalLabel = button ? button.textContent : '';
+        if (button) {
+            button.disabled = true;
+            button.textContent = '✨ AI 生成中...';
+        }
+        this.showLoading();
+
+        try {
+            const rendered = await ChannelConverter.renderForChannel('x', markdown, {
+                useAI: true
+            });
+            if (taskToken !== this.renderTaskToken) return;
+            this.applyRenderedChannelResult(rendered, htmlOutput, preview);
+            this.updateCopyButtonLabels();
+            this.updateChannelReminder('x');
+        } catch (error) {
+            console.error('Failed to generate X publishing content:', error);
+            htmlOutput.value = 'AI generation error: ' + error.message;
+            preview.innerHTML = '<p style="color: red;">AI 生成失败：' + ChannelConverter.escapeHtml(error.message) + '</p>';
+        } finally {
+            if (button) {
+                button.disabled = false;
+                button.textContent = originalLabel || '✨ 生成 X Article + Thread';
+            }
+        }
+    },
+
+    handlePreviewAction: function(event) {
+        const target = event && event.target;
+        const button = target && typeof target.closest === 'function'
+            ? target.closest('[data-x-copy]')
+            : null;
+        if (!button) return;
+        this.copyXPublishingPart(button);
+    },
+
+    copyXPublishingPart: async function(button) {
+        const bundle = this.currentRenderedResult && this.currentRenderedResult.data;
+        if (!bundle) return;
+
+        const kind = button.getAttribute('data-x-copy');
+        let content = '';
+        if (kind === 'article') {
+            content = bundle.articleMarkdown || '';
+        } else if (kind === 'thread-all') {
+            content = (bundle.threadPosts || []).join('\n\n---\n\n');
+        } else if (kind === 'thread') {
+            const index = Number(button.getAttribute('data-thread-index'));
+            content = (bundle.threadPosts || [])[index] || '';
+        }
+
+        if (!content) return;
+        const originalLabel = button.textContent;
+        let success = false;
+        if (kind === 'article' && typeof marked === 'function') {
+            const articleHtml = marked(content);
+            const articleText = ChannelConverter.markdownToPlainText(content);
+            success = await this.copyHtmlToClipboard(articleHtml, articleText);
+        }
+        if (!success) {
+            success = await this.copyToClipboard(content);
+        }
+        if (success) {
+            this.showCopySuccess(button, originalLabel);
+        } else {
+            alert('复制失败，请手动复制');
         }
     },
 

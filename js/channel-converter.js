@@ -71,23 +71,27 @@ const ChannelConverter = {
         },
         x: {
             id: 'x',
-            name: 'X Thread',
-            outputLabel: 'Thread',
-            outputTitle: '📋 X Thread 文案 (可滚动查看)',
-            copyPreviewLabel: '复制 Thread',
-            copyOutputLabel: '复制 Thread',
-            previewHostClass: 'thread-preview-host',
+            name: 'X Article + Thread',
+            outputLabel: 'Article + Thread',
+            outputTitle: '📋 X Article + Thread 发布包',
+            copyPreviewLabel: '复制发布包',
+            copyOutputLabel: '复制发布包',
+            previewHostClass: 'x-publishing-preview-host',
             reminder: {
-                requiresTranslation: true,
-                text: 'X 渠道会自动切成 thread，并在每条前面加 1/N 编号；未配置翻译时会直接基于原文切分。'
+                requiresAI: true,
+                missingText: '配置 OpenRouter API Key 后，点击“生成 X Article + Thread”，AI 会写推荐语并提取 3–6 个要点。',
+                text: '点击“生成 X Article + Thread”，AI 会生成首条推荐、要点总览和逐条展开的 Thread。'
             },
-            render: async function(markdown) {
-                const output = await ChannelConverter.buildXThread(markdown);
+            render: async function(markdown, context = {}) {
+                const bundle = await ChannelConverter.buildXPublishingBundle(markdown, {
+                    useAI: !!context.useAI
+                });
                 return {
-                    output,
-                    previewHtml: ChannelConverter.renderXThreadPreview(output),
-                    previewMode: 'thread',
-                    needsMathTypeset: false
+                    output: ChannelConverter.formatXPublishingBundle(bundle),
+                    previewHtml: ChannelConverter.renderXPublishingPreview(bundle),
+                    previewMode: 'x-publishing',
+                    needsMathTypeset: false,
+                    data: bundle
                 };
             }
         }
@@ -109,7 +113,8 @@ const ChannelConverter = {
             output: result.output || '',
             previewHtml: result.previewHtml || '',
             previewMode: result.previewMode || 'plain',
-            needsMathTypeset: !!result.needsMathTypeset
+            needsMathTypeset: !!result.needsMathTypeset,
+            data: result.data || null
         };
     },
 
@@ -157,6 +162,184 @@ const ChannelConverter = {
         const enText = this.markdownToPlainText(enMd);
         const posts = this.splitIntoXThread(enText);
         return posts.map((post, index) => `${index + 1}/${posts.length}\n${post}`).join('\n\n---\n\n');
+    },
+
+    async buildXPublishingBundle(markdown, options = {}) {
+        const sanitized = this.prepareSourceMarkdown(markdown).trim();
+        if (!sanitized) {
+            return {
+                articleMarkdown: '',
+                recommendation: '',
+                bulletPoints: [],
+                threadPosts: [],
+                usedAI: false,
+                aiError: ''
+            };
+        }
+
+        let articleMarkdown = sanitized;
+        let plan = null;
+        let usedAI = false;
+        let aiError = '';
+
+        if (options.useAI && typeof Translator.generateXPublishingPlan === 'function') {
+            try {
+                const translated = await Translator.translateMarkdownToEnglish(sanitized);
+                articleMarkdown = stripLeadMarkers(translated || sanitized).trim() || sanitized;
+                plan = await Translator.generateXPublishingPlan(articleMarkdown);
+                usedAI = !!plan;
+            } catch (error) {
+                aiError = error && error.message ? error.message : String(error || 'AI generation failed');
+                console.warn('X publishing AI generation failed, using local fallback:', error);
+            }
+        }
+
+        if (!plan) {
+            plan = this.buildFallbackXPlan(articleMarkdown);
+        }
+
+        const bulletPoints = (plan.bulletPoints || [])
+            .filter(point => point && point.title)
+            .slice(0, 6)
+            .map(point => ({
+                title: this.clipText(point.title, 70),
+                detail: this.clipText(point.detail || '', 190)
+            }));
+        const recommendation = this.clipText(plan.recommendation || '', 180);
+        const threadPosts = this.buildXThreadFromPlan(recommendation, bulletPoints);
+
+        return {
+            articleMarkdown,
+            recommendation,
+            bulletPoints,
+            threadPosts,
+            usedAI,
+            aiError
+        };
+    },
+
+    buildFallbackXPlan(markdown) {
+        const bulletPoints = this.extractXBulletPoints(markdown);
+        const plain = this.markdownToPlainText(markdown);
+        const titleMatch = String(markdown || '').match(/^\s*#\s+(.+)$/m);
+        const title = titleMatch ? this.markdownToPlainText(titleMatch[1]) : '';
+        const firstParagraph = plain
+            .split(/\n\n+/)
+            .map(part => part.trim())
+            .find(part => part && part !== title) || '';
+        const isChinese = /[\u3400-\u9fff]/.test(title || firstParagraph);
+        const prefix = isChinese ? '推荐阅读' : 'Recommended read';
+        const recommendation = [title, firstParagraph]
+            .filter(Boolean)
+            .join(' — ');
+
+        return {
+            recommendation: `${prefix}${recommendation ? `${isChinese ? '：' : ': '}${recommendation}` : ''}`,
+            bulletPoints
+        };
+    },
+
+    extractXBulletPoints(markdown, maxPoints = 5) {
+        const source = String(markdown || '').replace(/\r/g, '');
+        const lines = source.split('\n');
+        const points = [];
+
+        for (let index = 0; index < lines.length && points.length < maxPoints; index += 1) {
+            const heading = lines[index].match(/^\s*#{2,4}\s+(.+)$/);
+            if (!heading) continue;
+
+            let detail = '';
+            for (let next = index + 1; next < lines.length; next += 1) {
+                const candidate = lines[next].trim();
+                if (/^#{1,6}\s+/.test(candidate)) break;
+                if (candidate) {
+                    detail = this.markdownToPlainText(candidate);
+                    break;
+                }
+            }
+            points.push({
+                title: this.markdownToPlainText(heading[1]),
+                detail
+            });
+        }
+
+        if (points.length === 0) {
+            const listItems = lines
+                .map(line => line.match(/^\s*(?:[-*+]\s+|\d+\.\s+)(.+)$/))
+                .filter(Boolean)
+                .slice(0, maxPoints);
+            listItems.forEach(match => points.push({
+                title: this.markdownToPlainText(match[1]),
+                detail: ''
+            }));
+        }
+
+        if (points.length === 0) {
+            this.markdownToPlainText(source)
+                .split(/\n\n+/)
+                .map(part => part.trim())
+                .filter(Boolean)
+                .slice(0, maxPoints)
+                .forEach((part) => points.push({
+                    title: this.clipText(part, 70),
+                    detail: this.clipText(part, 190)
+                }));
+        }
+
+        return points;
+    },
+
+    buildXThreadFromPlan(recommendation, bulletPoints) {
+        if (!recommendation && bulletPoints.length === 0) {
+            return [];
+        }
+
+        const overview = bulletPoints
+            .map(point => `• ${point.title}`)
+            .join('\n');
+        const mainPost = this.clipText(
+            [recommendation, overview].filter(Boolean).join('\n\n'),
+            250
+        );
+        const rawPosts = [mainPost];
+
+        bulletPoints.forEach((point, index) => {
+            rawPosts.push(this.clipText(
+                [`${index + 1}. ${point.title}`, point.detail].filter(Boolean).join('\n\n'),
+                250
+            ));
+        });
+
+        return rawPosts.map((post, index) => `${index + 1}/${rawPosts.length}\n${post}`);
+    },
+
+    clipText(text, maxLength) {
+        const source = String(text || '').trim();
+        if (!maxLength || source.length <= maxLength) {
+            return source;
+        }
+
+        let clipped = '';
+        for (const character of source) {
+            if (`${clipped}${character}…`.length > maxLength) break;
+            clipped += character;
+        }
+        const lastBreak = Math.max(clipped.lastIndexOf(' '), clipped.lastIndexOf('\n'));
+        if (lastBreak > Math.floor(maxLength * 0.6)) {
+            clipped = clipped.slice(0, lastBreak);
+        }
+        return `${clipped.trim()}…`;
+    },
+
+    formatXPublishingBundle(bundle) {
+        if (!bundle || (!bundle.articleMarkdown && !bundle.threadPosts.length)) {
+            return '';
+        }
+        const article = `# X ARTICLE\n\n${bundle.articleMarkdown}`;
+        const thread = bundle.threadPosts.length
+            ? `# X THREAD\n\n${bundle.threadPosts.join('\n\n---\n\n')}`
+            : '';
+        return [article, thread].filter(Boolean).join('\n\n==========\n\n');
     },
 
     prepareSourceMarkdown(markdown) {
@@ -336,6 +519,54 @@ const ChannelConverter = {
         }).join('');
 
         return `<div class="thread-preview">${cards}</div>`;
+    },
+
+    renderXPublishingPreview(bundle) {
+        if (!bundle || !bundle.articleMarkdown) {
+            return '<div class="x-empty-state">输入 Markdown 后即可预览 X Article 和 Thread。</div>';
+        }
+
+        const statusLabel = bundle.usedAI ? 'AI 已生成推荐与要点' : '本地预览，点击按钮启用 AI';
+        const statusClass = bundle.usedAI ? 'is-ai' : 'is-fallback';
+        const articleHtml = marked(bundle.articleMarkdown);
+        const threadCards = bundle.threadPosts.map((post, index) => {
+            const [header, ...bodyLines] = post.split('\n');
+            const body = this.escapeHtml(bodyLines.join('\n')).replace(/\n/g, '<br>');
+            return `
+<div class="thread-card">
+  <div class="thread-card-toolbar">
+    <div class="thread-card-header">${this.escapeHtml(header)}</div>
+    <button type="button" class="x-copy-part-btn" data-x-copy="thread" data-thread-index="${index}">复制这条</button>
+  </div>
+  <div class="thread-card-body">${body}</div>
+</div>`;
+        }).join('');
+
+        return `
+<div class="x-publishing-preview">
+  <div class="x-generation-status ${statusClass}">${this.escapeHtml(statusLabel)}</div>
+  ${bundle.aiError ? `<div class="x-ai-error">AI 生成失败，已使用本地预览：${this.escapeHtml(bundle.aiError)}</div>` : ''}
+  <section class="x-article-card">
+    <div class="x-section-toolbar">
+      <div>
+        <div class="x-section-kicker">X ARTICLE</div>
+        <h2>X 长文章</h2>
+      </div>
+      <button type="button" class="x-copy-part-btn" data-x-copy="article">复制 Article 富文本</button>
+    </div>
+    <div class="x-article-content markdown-preview">${articleHtml}</div>
+  </section>
+  <section class="x-thread-section">
+    <div class="x-section-toolbar">
+      <div>
+        <div class="x-section-kicker">X THREAD</div>
+        <h2>推荐 + 要点 Thread</h2>
+      </div>
+      <button type="button" class="x-copy-part-btn" data-x-copy="thread-all">复制全部 Thread</button>
+    </div>
+    <div class="thread-preview">${threadCards}</div>
+  </section>
+</div>`;
     }
 };
 
